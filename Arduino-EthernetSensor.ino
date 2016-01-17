@@ -6,6 +6,7 @@
 // EOC is not used, it signifies an end of conv
 
 
+#include <EEPROM.h>
 #include <SPI.h>
 #include <Ethernet.h>
 #include <DallasTemperature.h>
@@ -15,12 +16,21 @@
 #define VER "1.0 - 11.01.2016"
 #define TEMP_PIN 7               // OneWire Pin zu Sensoren (im Moment nur einer angeschlossen)
 
+const int EEPROM_MIN_ADDR = 0;
+const int EEPROM_MAX_ADDR = 1023;  // valid for Arduino UNO
+
 unsigned long interval = 5000L;  // milli seconds
 unsigned long updateCounter = 0L;
 unsigned long previousMillis = 0L;
 float temperature = -127;
 float pressure = 0;
 float humidity = 0;
+
+
+// EEPROM address room
+int apiKeyAddr          = 0;  // String : length,char_array [int, char, char, ...]
+int thingSpeakActiveAddr = 20; // int
+
 
 
 // sensors ***************************************************************************
@@ -40,29 +50,44 @@ IPAddress subnet(255, 255, 0, 0);
 
 
 // telnet defaults to port 23  ****************************************************************
-EthernetServer server(23);
+EthernetServer server(23);  // port 23 for TelNet
 boolean alreadyConnected = false; // whether or not the client was connected previously
 
 
 // thingSpeak *********************************************************************************
 bool   thingSpeakActive    = 1;  // 1 = upload sensor data to ThingSpeak channel. 0 = don't connect to ThingSpeak
 char   thingSpeakAddress[] = "api.thingspeak.com";
-String writeAPIKey         = "2Q3VXKLFOAVBNTZA";
+String writeAPIKey         = "Read from EEPROM";   // https://thingspeak.com/channels/79359
 bool   lastTSconnectSuccessful = 0;
+EthernetClient ethernetClient;
 
+
+// *********************************************************************************************
 void setup() {
+  // read states from EEPROM
+  int len = 0;  // is used for string length in EEPROM. be aware that the code converts it to byte(len)
+                // to use one byte in memory only! That limits the max value to 255 istead of real int.
+  
+  //EEPROM.put(apiKeyAddr,byte(17));
+  //write_StringEE(apiKeyAddr+1, String("1234567890123456"));
+  
+  len         = int(EEPROM.read(apiKeyAddr));
+  writeAPIKey = read_StringEE(apiKeyAddr+1, len);
+  
   // initialize the ethernet device
   Ethernet.begin(mac, ip, myDns, gateway, subnet);
-  // start listening for clients
-  server.begin();
+  
+  // start listening for TelNet clients
+  server.begin(); // TelNet Server
+  
   // Open serial communications and wait for port to open:
-  //Serial.begin(9600);
-  //while (!Serial) {
+  Serial.begin(9600);
+  while (!Serial) {
     ; // wait for serial port to connect. Needed for native USB port only
-  //}
-
-  Serial.print("Chat server address:");
-  Serial.println(Ethernet.localIP());
+  }
+  Serial.println(writeAPIKey);
+  //Serial.print("Chat server address:");
+  //Serial.println(Ethernet.localIP());
 
   sensors.begin();    // start up temperature sensor
   sensors.setResolution(Probe03, 10);
@@ -184,8 +209,6 @@ bool parseTelnetCommand()
 
 void updateThingSpeak(String tsData)
 {
-  EthernetClient ethernetClient;
-  
   if (ethernetClient.connect(thingSpeakAddress, 80))
   {         
     ethernetClient.print("POST /update HTTP/1.1\n");
@@ -212,21 +235,126 @@ void updateThingSpeak(String tsData)
 
 
 
+// write String to EEPROM. Use read_StringEE to read it
+// Convention: The 
+bool write_StringEE(int Addr, String input)
+{
+    char cbuff[input.length()+1];//Finds length of string to make a buffer
+    input.toCharArray(cbuff,input.length()+1);//Converts String into character array
+    return eeprom_write_string(Addr,cbuff);//Saves String
+}
 
 
+String read_StringEE(int Addr,int length)
+{
+  String stemp="";
+  char cbuff[length];
+  eeprom_read_string(Addr,cbuff,length);
+  for(int i=0;i<length-1;i++)
+  {
+    stemp.concat(cbuff[i]);//combines characters into a String
+    delay(100);
+  }
+  return stemp;
+}
 
 
+// Writes a string starting at the specified address.
+// Returns true if the whole string is successfully written.
+// Returns false if the address of one or more bytes fall outside the allowed range.
+// If false is returned, nothing gets written to the eeprom.
+boolean eeprom_write_string(int addr, const char* string) {
+ 
+  int numBytes; // actual number of bytes to be written
+ 
+  //write the string contents plus the string terminator byte (0x00)
+  numBytes = strlen(string) + 1;
+ 
+  return eeprom_write_bytes(addr, (const byte*)string, numBytes);
+}
 
 
+// Writes a sequence of bytes to eeprom starting at the specified address.
+// Returns true if the whole array is successfully written.
+// Returns false if the start or end addresses aren't between
+// the minimum and maximum allowed values.
+// When returning false, nothing gets written to eeprom.
+boolean eeprom_write_bytes(int startAddr, const byte* array, int numBytes) {
+  // counter
+  int i;
+ 
+  // both first byte and last byte addresses must fall within
+  // the allowed range
+  if (!eeprom_is_addr_ok(startAddr) || !eeprom_is_addr_ok(startAddr + numBytes)) {
+    return false;
+  }
+ 
+  for (i = 0; i < numBytes; i++) {
+    EEPROM.write(startAddr + i, array[i]);
+  }
+ 
+  return true;
+}
 
 
+// Reads a string starting from the specified address.
+// Returns true if at least one byte (even only the string terminator one) is read.
+// Returns false if the start address falls outside the allowed range or declare buffer size is zero.
+//
+// The reading might stop for several reasons:
+// - no more space in the provided buffer
+// - last eeprom address reached
+// - string terminator byte (0x00) encountered.
+boolean eeprom_read_string(int addr, char* buffer, int bufSize) {
+  byte ch; // byte read from eeprom
+  int bytesRead; // number of bytes read so far
+ 
+  if (!eeprom_is_addr_ok(addr)) { // check start address
+    return false;
+  }
+ 
+  if (bufSize == 0) { // how can we store bytes in an empty buffer ?
+    return false;
+  }
+ 
+  // is there is room for the string terminator only, no reason to go further
+  if (bufSize == 1) {
+    buffer[0] = 0;
+    return true;
+  }
+ 
+  bytesRead = 0; // initialize byte counter
+  ch = EEPROM.read(addr + bytesRead); // read next byte from eeprom
+  buffer[bytesRead] = ch; // store it into the user buffer
+  bytesRead++; // increment byte counter
+ 
+  // stop conditions:
+  // - the character just read is the string terminator one (0x00)
+  // - we have filled the user buffer
+  // - we have reached the last eeprom address
+  while ( (ch != 0x00) && (bytesRead < bufSize) && ((addr + bytesRead) <= EEPROM_MAX_ADDR) ) {
+    // if no stop condition is met, read the next byte from eeprom
+    ch = EEPROM.read(addr + bytesRead);
+    buffer[bytesRead] = ch; // store it into the user buffer
+    bytesRead++; // increment byte counter
+  }
+ 
+  // make sure the user buffer has a string terminator, (0x00) as its last byte
+  if ((ch != 0x00) && (bytesRead >= 1)) {
+    buffer[bytesRead - 1] = 0;
+  }
+ 
+  return true;
+}
 
-
-
-
-
-
-
+// Returns true if the address is between the
+// minimum and maximum allowed values, false otherwise.
+//
+// This function is used by the other, higher-level functions
+// to prevent bugs and runtime errors due to invalid addresses.
+boolean eeprom_is_addr_ok(int addr) {
+  return ((addr >= EEPROM_MIN_ADDR) && (addr <= EEPROM_MAX_ADDR));
+}
 
 
 
