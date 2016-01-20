@@ -4,23 +4,25 @@
 // Connect GND to Ground
 // Connect SCL to i2c clock - on '168/'328 Arduino Uno/Duemilanove/etc thats Analog 5
 // Connect SDA to i2c data - on '168/'328 Arduino Uno/Duemilanove/etc thats Analog 4
-// EOC is not used, it signifies an end of conv
+// 
 
 
 #include <EEPROM.h>
 #include <SPI.h>
 #include <Ethernet.h>
 #include <DallasTemperature.h>
-#include <Adafruit_BMP085.h>     // for pressure sensor
+#include "Adafruit_BMP085.h"     // for pressure sensor
+#include "DHT.h"
 
-
+#define DHTPIN 2     // what digital pin we're connected to
+#define DHTTYPE DHT11   // DHT 11
 #define VER "1.0 - 11.01.2016"
 #define TEMP_PIN 7               // OneWire Pin zu Sensoren (im Moment nur einer angeschlossen)
 
 const int EEPROM_MIN_ADDR = 0;
 const int EEPROM_MAX_ADDR = 1023;  // valid for Arduino UNO
 
-unsigned long interval = 5000L;  // milli seconds
+unsigned long interval = 81000L;  // milli seconds
 unsigned long updateCounter = 0L;
 unsigned long previousMillis = 0L;
 float temperature = -127;
@@ -30,8 +32,8 @@ float humidity = 0;
 
 // EEPROM address room
 int apiKeyAddr          = 0;  // String : length,char_array [int, char, char, ...]
-int thingSpeakActiveAddr = 20; // int
-
+int thingSpeakActiveAddr = 20; // bool (1 byte?)
+int intervalAddr        = 22;  // unsigned long  (4 byte)
 
 
 // sensors ***************************************************************************
@@ -43,16 +45,20 @@ Adafruit_BMP085    bmp;  // pressure sensor BMP180 (GY-68)
 //DeviceAddress Probe02 = { 0x28, 0x9A, 0xF1, 0x3C, 0x07, 0x00, 0x00, 0x2B };  // DS18S20 #2
 DeviceAddress Probe03 = { 0x28, 0x78, 0xB2, 0x3B, 0x07, 0x00, 0x00, 0x4D }; // DS18S20 #3
 
-byte mac[] = {  0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
-IPAddress ip(192, 168, 1, 78);
+DHT dht(DHTPIN, DHTTYPE);   // humidity sensor
+
+
+// Ethernet **************************************************************************
+byte mac[] = {  0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xE1 };
+IPAddress ip(192, 168, 1, 201);
 IPAddress myDns(192,168,1, 1);
 IPAddress gateway(192, 168, 1, 1);
-IPAddress subnet(255, 255, 0, 0);
+IPAddress subnet(255, 255, 255, 0);
 
 
 // telnet defaults to port 23  ****************************************************************
 EthernetServer server(23);  // port 23 for TelNet
-boolean alreadyConnected = false; // whether or not the client was connected previously
+boolean alreadyConnected = false; // whether or not the telnet client was connected previously
 
 
 // thingSpeak *********************************************************************************
@@ -60,44 +66,66 @@ bool   thingSpeakActive    = 1;  // 1 = upload sensor data to ThingSpeak channel
 char   thingSpeakAddress[] = "api.thingspeak.com";
 String writeAPIKey         = "Read from EEPROM";   // https://thingspeak.com/channels/79359
 bool   lastTSconnectSuccessful = 0;
+long   failedConnectionCount = 0;
+int    resetCounter = 0;   // after 5 failed attempts Ethernet will be restarted
 EthernetClient ethernetClient;
 
 
 // *********************************************************************************************
 void setup() {
+  // disable SD card
+  pinMode(4, OUTPUT);
+  digitalWrite(4, HIGH);
+
   // read states from EEPROM
   int len = 0;  // is used for string length in EEPROM. be aware that the code converts it to byte(len)
-                // to use one byte in memory only! That limits the max value to 255 istead of real int.
+                // to use one byte in memory only! That limits the max value to 255 instead of real int.
   
+  // use this code to initialize the EEPROM if there has not been written any persisitent data to it.
   //EEPROM.put(apiKeyAddr,byte(17));
   //write_StringEE(apiKeyAddr+1, String("1234567890123456"));
+  //EEPROM.put(thingSpeakActiveAddr, thingSpeakActive);
+  //EEPROM_writelong(intervalAddr, interval);
   
-  len         = int(EEPROM.read(apiKeyAddr));
-  writeAPIKey = read_StringEE(apiKeyAddr+1, len);
+
+  
+  len              = int(EEPROM.read(apiKeyAddr));
+  writeAPIKey      = read_StringEE(apiKeyAddr+1, len);
+  thingSpeakActive = EEPROM.read(thingSpeakActiveAddr);
+  interval         = EEPROM_readlong(intervalAddr);
   
   // initialize the ethernet device
   Ethernet.begin(mac, ip, myDns, gateway, subnet);
+  delay(1000);  // allow some start-up time for ethernet shield
   
   // start listening for TelNet clients
   server.begin(); // TelNet Server
-  
+
   // Open serial communications and wait for port to open:
   Serial.begin(9600);
   while (!Serial) {
     ; // wait for serial port to connect. Needed for native USB port only
   }
+  Serial.print("IP: ");
+  Serial.println(Ethernet.localIP());
+  Serial.print("API Key: ");
   Serial.println(writeAPIKey);
-  //Serial.print("Chat server address:");
-  //Serial.println(Ethernet.localIP());
+  Serial.print("thingSpeakActive: ");
+  Serial.println(thingSpeakActive);
+  Serial.print("interval: ");
+  Serial.println(interval);
+
 
   sensors.begin();    // start up temperature sensor
   sensors.setResolution(Probe03, 10);
 
   bmp.begin();   // start up pressure sensor
+  dht.begin();   // start up humidity sensor
 
   delay(1000); // initial start-up time to settle hardware etc
-  
 }
+
+
 
 void loop() {
 
@@ -110,6 +138,7 @@ void loop() {
     
     temperature = sensors.getTempC(Probe03);
     pressure    = 0.01*bmp.readPressure();  // convert to mBar
+    humidity = dht.readHumidity();
 
     if(thingSpeakActive)
     {
@@ -143,17 +172,17 @@ bool parseTelnetCommand()
     if (!alreadyConnected) {
       // clear out the input buffer:
       client.flush();
-      Serial.println("client connected");
       client.println("client connected");
       alreadyConnected = true;
     }
 
+    // read the bytes incoming from the client:
     while(client.available() > 0) {
-      // read the bytes incoming from the client:
       char c = client.read();
       command.concat(c);  // append character to string
     }
-    
+
+    // interpret incoming data
     command.replace(" ", "");  // clean string from spaces
     
     if(command.startsWith("set")){
@@ -193,10 +222,18 @@ bool parseTelnetCommand()
         client.println(String("thingSpeakActive = ") + thingSpeakActive);
       } else if(command.startsWith("lastTSconnect")){
         client.println(String("lastTSconnectSuccessful = ") + lastTSconnectSuccessful); 
+      } else if(command.startsWith("failedConnectionCount")){
+        client.println(String("failedConnectionCount = ") + failedConnectionCount); 
+      } else if(command.startsWith("ip")){
+        IPAddress address = Ethernet.localIP();
+        String printStr = String(address[0]) + "." + String(address[1]) + "." + String(address[2]) + "." + String(address[3]);
+        client.println(String("IP address = ") + printStr); 
       }
     }
     else if(command.startsWith("help")){
       client.println("get temperature\n\rget pressure\n\rget humidity\n\rget sensors\n\rgetmillis\n\rgetinterval\n\rgetcounter\n\rget ver\n\rset interval=1000");
+    } else if(command.length() == 0){
+      // do nothing;
     }
     else {
       client.println("error: command must start with 'set' or 'get'");
@@ -210,6 +247,7 @@ bool parseTelnetCommand()
 
 void updateThingSpeak(String tsData)
 {
+  ethernetClient.stop(); // free socket
   if (ethernetClient.connect(thingSpeakAddress, 80))
   {         
     ethernetClient.print("POST /update HTTP/1.1\n");
@@ -222,16 +260,30 @@ void updateThingSpeak(String tsData)
     ethernetClient.print("\n\n");
     ethernetClient.print(tsData);
 
-    Serial.println(tsData);
+    //Serial.println(tsData);
     lastTSconnectSuccessful = 1;
+    resetCounter = 0;
   }
   else
   {
     // connection failed
     lastTSconnectSuccessful = 0;
+    failedConnectionCount++;
+    resetCounter++;
+    if(resetCounter>=5){
+      restartEthernet();
+      delay(1000);  // wait a moment to have ethernet shield start up
+      resetCounter = 0;
+    }
   }
   
   ethernetClient.stop();
+}
+
+
+void restartEthernet()
+{
+  Ethernet.begin(mac, ip, myDns, gateway, subnet);
 }
 
 
@@ -356,6 +408,45 @@ boolean eeprom_read_string(int addr, char* buffer, int bufSize) {
 boolean eeprom_is_addr_ok(int addr) {
   return ((addr >= EEPROM_MIN_ADDR) && (addr <= EEPROM_MAX_ADDR));
 }
+
+
+
+
+
+ // read double word from EEPROM, give starting address
+ unsigned long EEPROM_readlong(int address) {
+ //use word read function for reading upper part
+ unsigned long dword = EEPROM_readint(address);
+ //shift read word up
+ dword = dword << 16;
+ // read lower word from EEPROM and OR it into double word
+ dword = dword | EEPROM_readint(address+2);
+ return dword;
+}
+
+//write word to EEPROM
+ void EEPROM_writeint(int address, int value) {
+ EEPROM.write(address,highByte(value));
+ EEPROM.write(address+1 ,lowByte(value));
+}
+ 
+ //write long integer into EEPROM
+ void EEPROM_writelong(int address, unsigned long value) {
+ //truncate upper part and write lower part into EEPROM
+ EEPROM_writeint(address+2, word(value));
+ //shift upper part down
+ value = value >> 16;
+ //truncate and write
+ EEPROM_writeint(address, word(value));
+}
+
+unsigned int EEPROM_readint(int address) {
+ unsigned int word = word(EEPROM.read(address), EEPROM.read(address+1));
+ return word;
+}
+
+
+
 
 
 
