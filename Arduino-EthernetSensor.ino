@@ -16,7 +16,7 @@
 
 #define DHTPIN 2     // what digital pin we're connected to
 #define DHTTYPE DHT11   // DHT 11
-#define VER "1.0 - 11.01.2016"
+#define VER "1.0 - 22.01.2016"
 #define TEMP_PIN 7               // OneWire Pin zu Sensoren (im Moment nur einer angeschlossen)
 
 const int EEPROM_MIN_ADDR = 0;
