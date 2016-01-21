@@ -8,7 +8,7 @@
 
 
 #include <EEPROM.h>
-#include <SPI.h>
+//#include <SPI.h>
 #include <Ethernet.h>
 #include <DallasTemperature.h>
 #include "Adafruit_BMP085.h"     // for pressure sensor
@@ -102,7 +102,7 @@ void setup() {
   server.begin(); // TelNet Server
 
   // Open serial communications and wait for port to open:
-  Serial.begin(9600);
+/*  Serial.begin(9600);
   while (!Serial) {
     ; // wait for serial port to connect. Needed for native USB port only
   }
@@ -114,7 +114,7 @@ void setup() {
   Serial.println(thingSpeakActive);
   Serial.print("interval: ");
   Serial.println(interval);
-
+*/
 
   sensors.begin();    // start up temperature sensor
   sensors.setResolution(Probe03, 10);
@@ -184,62 +184,106 @@ bool parseTelnetCommand()
 
     // interpret incoming data
     command.replace(" ", "");  // clean string from spaces
-    
-    if(command.startsWith("set")){
-      command.remove(0,3); // remove order type to allow variables named set or get
-      
-      // set through possible commands
-      if(command.startsWith("interval=")){
-        command.remove(0,9); // remove command
-        int val = command.toInt();  // read following statement as integer
-        if(val!=0){
-          // set global interval to new value
-          interval = val;
-          client.println(String("new interval = ") + String(val) + String("msec"));
-        }
-      } 
-    } 
-    else if(command.startsWith("get")){
-      command.remove(0,3); // remove order type to allow variables named set or get
+    command.trim();
 
-      if(command.startsWith("ver")){
+    // command examples
+    // get interval                       -> getinterval
+    // set interval = 1000                -> setinterval=1000
+    // set writeAPIKey JFDKJFHSKDJFHKSJ   -> setwriteAPIKeyJFDKJFHSKDJFHKSJ
+    
+    String inputStr;  // prepare String for input value after "="
+    String commandStr;
+    int equalPos = command.indexOf("=");  // find out if set or get and locate "="
+
+    if(equalPos != -1){
+      commandStr = command.substring(0,equalPos);
+      inputStr = command.substring(equalPos+1);
+    } else {
+      commandStr = command.substring(0);
+     
+    }
+
+/*    Serial.println(command);
+    Serial.println(commandStr);
+    Serial.println(inputStr);
+ */
+ 
+    // look for known commands **************
+    if(     commandStr.equalsIgnoreCase(String("getver"))){
         client.println(String("version: ") + VER);
-      } else if(command.startsWith("temperature")){
+    } 
+    else if(commandStr.equalsIgnoreCase("gettemperature")){
         client.println(String("temperature = ") + temperature + String("°C"));
-      } else if(command.startsWith("pressure")){
+    } 
+    else if(commandStr.equalsIgnoreCase("getpressure")){
         client.println(String("pressure = ") + pressure  + String("mBar"));
-      } else if(command.startsWith("humidity")){
+    } 
+    else if(commandStr.equalsIgnoreCase("gethumidity")){
         client.println(String("humidity = ") + humidity);
-      } else if(command.startsWith("sensors")){
+    } 
+    else if(commandStr.equalsIgnoreCase("getsensors")){
         client.println(String("temperture\n\rhumidity\n\rpressure"));
-      } else if(command.startsWith("millis")){
+    } 
+    else if(commandStr.equalsIgnoreCase("getmillis")){
         client.println(String("millis() = ") + millis() + String("msec"));
-      } else if(command.startsWith("interval")){
-        client.println(String("interval = ") + interval + String("msec"));
-      } else if(command.startsWith("counter")){
-        client.println(String("updates since start = ") + updateCounter);
-      } else if(command.startsWith("thingSpeakActive")){
+    } 
+    else if(commandStr.equalsIgnoreCase("getinterval")){
+        client.println(String("interval = ") + String(interval) + String("msec. To set new interval use 'set interval=[seconds]'"));
+    } 
+    else if(commandStr.equalsIgnoreCase("getcounter")){
+        client.println(String("ThingSpeak updates since start = ") + updateCounter);
+    } 
+    else if(commandStr.equalsIgnoreCase("getthingSpeakActive")){
         client.println(String("thingSpeakActive = ") + thingSpeakActive);
-      } else if(command.startsWith("lastTSconnect")){
+    } 
+    else if(commandStr.equalsIgnoreCase("getlastTSconnect")){
         client.println(String("lastTSconnectSuccessful = ") + lastTSconnectSuccessful); 
-      } else if(command.startsWith("failedConnectionCount")){
+    } 
+    else if(commandStr.equalsIgnoreCase("getfailedConnectionCount")){
         client.println(String("failedConnectionCount = ") + failedConnectionCount); 
-      } else if(command.startsWith("ip")){
+    } 
+    else if(commandStr.equalsIgnoreCase("getip")){
         IPAddress address = Ethernet.localIP();
         String printStr = String(address[0]) + "." + String(address[1]) + "." + String(address[2]) + "." + String(address[3]);
         client.println(String("IP address = ") + printStr); 
-      }
-    }
-    else if(command.startsWith("help")){
-      client.println("get temperature\n\rget pressure\n\rget humidity\n\rget sensors\n\rgetmillis\n\rgetinterval\n\rgetcounter\n\rget ver\n\rset interval=1000");
-    } else if(command.length() == 0){
-      // do nothing;
+    } 
+    else if(commandStr.equalsIgnoreCase("setinterval")){
+        unsigned long msecs = inputStr.toInt() * 1000L; // convert seconds to millis
+        client.println(String(msecs) + String(" msec"));
+        EEPROM_writelong(intervalAddr, msecs);
+        interval = EEPROM_readlong(intervalAddr);
+        //client.println(String("Wrote new interval to EEPROM."));
+        client.println(String("new interval = " + String(interval) + String(" msecs")));
+    } 
+    else if(commandStr.equalsIgnoreCase("setapiKey")){
+        client.println("received new apiKey: " + inputStr);
+        if(inputStr.length()==16){
+          write_StringEE(apiKeyAddr+1, inputStr);    
+          int len = int(EEPROM.read(apiKeyAddr));
+          writeAPIKey = read_StringEE(apiKeyAddr+1, len);
+          //client.println(String("Wrote new ThingSpeak apiKey to EEPROM."));
+          client.println("new key: " + String(writeAPIKey));
+        } else {
+          client.println("Key must be 16 characters long! Key not set.");
+        }
+    } 
+    else if(commandStr.equalsIgnoreCase("setthingSpeakActive")){
+        bool newVal = inputStr.toInt();
+        if(newVal==1 || newVal==0){
+          EEPROM.put(thingSpeakActiveAddr, newVal);
+          thingSpeakActive = EEPROM.read(thingSpeakActiveAddr);
+          //client.println(String("Wrote new ThingSpeakActive state to EEPROM."));
+          client.println("new state: " + String(thingSpeakActive));
+        }
+    } else if (commandStr.equalsIgnoreCase("restartEthernet")) {
+        restartEthernet();
     }
     else {
-      client.println("error: command must start with 'set' or 'get'");
+      client.println("unknown command");
     }  
   }
 }
+
 
 
 
@@ -281,10 +325,13 @@ void updateThingSpeak(String tsData)
 }
 
 
+
 void restartEthernet()
 {
   Ethernet.begin(mac, ip, myDns, gateway, subnet);
 }
+
+
 
 
 
@@ -400,6 +447,12 @@ boolean eeprom_read_string(int addr, char* buffer, int bufSize) {
   return true;
 }
 
+
+
+
+
+
+
 // Returns true if the address is between the
 // minimum and maximum allowed values, false otherwise.
 //
@@ -413,21 +466,21 @@ boolean eeprom_is_addr_ok(int addr) {
 
 
 
- // read double word from EEPROM, give starting address
- unsigned long EEPROM_readlong(int address) {
- //use word read function for reading upper part
- unsigned long dword = EEPROM_readint(address);
- //shift read word up
- dword = dword << 16;
- // read lower word from EEPROM and OR it into double word
- dword = dword | EEPROM_readint(address+2);
- return dword;
+// read double word from EEPROM, give starting address
+unsigned long EEPROM_readlong(int address) {
+  //use word read function for reading upper part
+  unsigned long dword = EEPROM_readint(address);
+  //shift read word up
+  dword = dword << 16;
+  // read lower word from EEPROM and OR it into double word
+  dword = dword | EEPROM_readint(address+2);
+  return dword;
 }
 
 //write word to EEPROM
- void EEPROM_writeint(int address, int value) {
- EEPROM.write(address,highByte(value));
- EEPROM.write(address+1 ,lowByte(value));
+void EEPROM_writeint(int address, int value) {
+  EEPROM.write(address,highByte(value));
+  EEPROM.write(address+1 ,lowByte(value));
 }
  
  //write long integer into EEPROM
