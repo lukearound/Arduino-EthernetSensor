@@ -8,7 +8,7 @@
 
 
 #include <EEPROM.h>
-//#include <SPI.h>
+//#include <SPI.h>      // uncomment for Serial Monitoring
 #include <Ethernet.h>
 #include <DallasTemperature.h>
 #include "Adafruit_BMP085.h"     // for pressure sensor
@@ -16,11 +16,13 @@
 
 #define DHTPIN 2     // what digital pin we're connected to
 #define DHTTYPE DHT11   // DHT 11
-#define VER "1.0 - 22.01.2016"
+#define VER "1.1 - 15.02.2016"
 #define TEMP_PIN 7               // OneWire Pin zu Sensoren (im Moment nur einer angeschlossen)
 
-const int EEPROM_MIN_ADDR = 0;
-const int EEPROM_MAX_ADDR = 1023;  // valid for Arduino UNO
+const int EEPROM_MIN_ADDR     = 0;
+const int EEPROM_MAX_ADDR     = 1023;  // valid for Arduino UNO
+const int ARDUINO_ID          = 1;
+const char ARDUINO_LOCATION[] = "Wohnzimmer";  // ToDo: save in EEPROM
 
 unsigned long interval = 81000L;  // milli seconds
 unsigned long updateCounter = 0L;
@@ -31,9 +33,9 @@ float humidity = 0;
 
 
 // EEPROM address room
-int apiKeyAddr          = 0;  // String : length,char_array [int, char, char, ...]
-int thingSpeakActiveAddr = 20; // bool (1 byte?)
-int intervalAddr        = 22;  // unsigned long  (4 byte)
+int apiKeyAddr    = 0;  // String : length,char_array [int, char, char, ...]
+int sqlActiveAddr = 20; // bool (1 byte?)
+int intervalAddr  = 22;  // unsigned long  (4 byte)
 
 
 // sensors ***************************************************************************
@@ -43,7 +45,9 @@ Adafruit_BMP085    bmp;  // pressure sensor BMP180 (GY-68)
 
 //DeviceAddress Probe01 = { 0x28, 0xBE, 0xFA, 0x3B, 0x07, 0x00, 0x00, 0xB7 };  // DS18S20 #1
 //DeviceAddress Probe02 = { 0x28, 0x9A, 0xF1, 0x3C, 0x07, 0x00, 0x00, 0x2B };  // DS18S20 #2
-DeviceAddress Probe03 = { 0x28, 0x78, 0xB2, 0x3B, 0x07, 0x00, 0x00, 0x4D }; // DS18S20 #3
+//DeviceAddress Probe03 = { 0x28, 0x78, 0xB2, 0x3B, 0x07, 0x00, 0x00, 0x4D };  // DS18S20 #3
+DeviceAddress Probe04 = { 0x28, 0xAB, 0x70, 0x29, 0x07, 0x00, 0x00, 0x4E };    // DS18S20 #4
+
 
 DHT dht(DHTPIN, DHTTYPE);   // humidity sensor
 
@@ -61,11 +65,11 @@ EthernetServer server(23);  // port 23 for TelNet
 boolean alreadyConnected = false; // whether or not the telnet client was connected previously
 
 
-// thingSpeak *********************************************************************************
-bool   thingSpeakActive    = 1;  // 1 = upload sensor data to ThingSpeak channel. 0 = don't connect to ThingSpeak
-char   thingSpeakAddress[] = "api.thingspeak.com";
-String writeAPIKey         = "Read from EEPROM";   // https://thingspeak.com/channels/79359
-bool   lastTSconnectSuccessful = 0;
+// SQL *********************************************************************************
+bool   sqlActive           = 1; // 1: upload sensor data into sql database, 2: don't upload
+char   sqlServerAddress[]  = "192.168.1.70";   // should be "dataserver.local", but there is a bug not resolving local names
+String writeAPIKey         = "Read from EEPROM";   // necessary to get sql write permission
+bool   lastSQLconnectSuccessful = 0;
 long   failedConnectionCount = 0;
 int    resetCounter = 0;   // after 5 failed attempts Ethernet will be restarted
 EthernetClient ethernetClient;
@@ -82,17 +86,16 @@ void setup() {
                 // to use one byte in memory only! That limits the max value to 255 instead of real int.
   
   // use this code to initialize the EEPROM if there has not been written any persisitent data to it.
-  //EEPROM.put(apiKeyAddr,byte(17));
-  //write_StringEE(apiKeyAddr+1, String("1234567890123456"));
-  //EEPROM.put(thingSpeakActiveAddr, thingSpeakActive);
-  //EEPROM_writelong(intervalAddr, interval);
-  
+  /*EEPROM.put(apiKeyAddr,byte(8));
+  write_StringEE(apiKeyAddr+1, String("ARDU123"));
+  EEPROM.put(sqlActiveAddr, sqlActive);
+  EEPROM_writelong(intervalAddr, interval);
+  */
 
-  
-  len              = int(EEPROM.read(apiKeyAddr));
-  writeAPIKey      = read_StringEE(apiKeyAddr+1, len);
-  thingSpeakActive = EEPROM.read(thingSpeakActiveAddr);
-  interval         = EEPROM_readlong(intervalAddr);
+  len           = int(EEPROM.read(apiKeyAddr));
+  writeAPIKey   = read_StringEE(apiKeyAddr+1, len);
+  sqlActive     = EEPROM.read(sqlActiveAddr);
+  interval      = EEPROM_readlong(intervalAddr);
   
   // initialize the ethernet device
   Ethernet.begin(mac, ip, myDns, gateway, subnet);
@@ -101,7 +104,7 @@ void setup() {
   // start listening for TelNet clients
   server.begin(); // TelNet Server
 
-  // Open serial communications and wait for port to open:
+  // Open serial communications and wait for port to open:  (don't forget to include SPI.h)
 /*  Serial.begin(9600);
   while (!Serial) {
     ; // wait for serial port to connect. Needed for native USB port only
@@ -110,14 +113,14 @@ void setup() {
   Serial.println(Ethernet.localIP());
   Serial.print("API Key: ");
   Serial.println(writeAPIKey);
-  Serial.print("thingSpeakActive: ");
-  Serial.println(thingSpeakActive);
+  Serial.print("sqlActive: ");
+  Serial.println(sqlActive);
   Serial.print("interval: ");
   Serial.println(interval);
 */
 
   sensors.begin();    // start up temperature sensor
-  sensors.setResolution(Probe03, 10);
+  sensors.setResolution(Probe04, 10);
 
   bmp.begin();   // start up pressure sensor
   dht.begin();   // start up humidity sensor
@@ -136,27 +139,53 @@ void loop() {
     
     sensors.requestTemperatures();
     
-    temperature = sensors.getTempC(Probe03);
+    temperature = sensors.getTempC(Probe04);
     pressure    = 0.01*bmp.readPressure();  // convert to mBar
     humidity = dht.readHumidity();
 
-    if(thingSpeakActive)
+    if(sqlActive)
     {
-      //updateThingSpeak("field1="+tempStr1+"&field2="+tempStr2);
-      String tsStr = String("field1=") + temperature + String("&field2=") + pressure + String("&field3=") + humidity;
-      updateThingSpeak(tsStr);
+      // SaveToMySQL.php?key=XXXXX&sensor_id=Y&ort=RAUM&t1=20&p1=1024&h1=50
+      String phpStr = String("GET /SaveToMySQL.php")
+                    + "?key=" + String(writeAPIKey)
+                    + "&sensor_id=" + ARDUINO_ID
+                    + "&ort=" + String(ARDUINO_LOCATION) 
+                    + "&t1=" + temperature
+                    + "&p1=" + pressure 
+                    + "&h1=" + humidity;
+      
+      ethernetClient.stop(); // free socket
+      if (ethernetClient.connect(sqlServerAddress, 80))
+      {         
+        ethernetClient.print(phpStr);
+        ethernetClient.println(" HTTP/1.1");
+        ethernetClient.println("Host: www.example.com");
+        ethernetClient.println("Accept: text/html");
+        ethernetClient.println("Connection: close");
+        ethernetClient.println();
+                
+        lastSQLconnectSuccessful = 1;
+        resetCounter = 0;
+      }
+      else
+      {
+        // connection failed
+        lastSQLconnectSuccessful = 0;
+        failedConnectionCount++;
+        resetCounter++;
+        if(resetCounter>=5){
+          restartEthernet();
+          delay(1000);  // wait a moment to have ethernet shield start up
+          resetCounter = 0;
+        }
+      }
+      ethernetClient.stop();
     }
   }
-
     
   // check if there is a Telnet connection and parse commands
   parseTelnetCommand();
 }
-
-
-
-
-
 
 
 
@@ -203,11 +232,7 @@ bool parseTelnetCommand()
      
     }
 
-/*    Serial.println(command);
-    Serial.println(commandStr);
-    Serial.println(inputStr);
- */
- 
+
     // look for known commands **************
     if(     commandStr.equalsIgnoreCase(String("getver"))){
         client.println(String("version: ") + VER);
@@ -215,15 +240,18 @@ bool parseTelnetCommand()
     else if(commandStr.equalsIgnoreCase("gettemperature")){
         client.println(String("temperature = ") + temperature + String("°C"));
     } 
+    else if(commandStr.equalsIgnoreCase("getlocation")){
+        client.println(String("location = ") + ARDUINO_LOCATION);
+    } 
     else if(commandStr.equalsIgnoreCase("getpressure")){
         client.println(String("pressure = ") + pressure  + String("mBar"));
     } 
     else if(commandStr.equalsIgnoreCase("gethumidity")){
         client.println(String("humidity = ") + humidity);
     } 
-    else if(commandStr.equalsIgnoreCase("getsensors")){
+    /*else if(commandStr.equalsIgnoreCase("getsensors")){
         client.println(String("temperture\n\rhumidity\n\rpressure"));
-    } 
+    }*/
     else if(commandStr.equalsIgnoreCase("getmillis")){
         client.println(String("millis() = ") + millis() + String("msec"));
     } 
@@ -233,20 +261,20 @@ bool parseTelnetCommand()
     else if(commandStr.equalsIgnoreCase("getcounter")){
         client.println(String("ThingSpeak updates since start = ") + updateCounter);
     } 
-    else if(commandStr.equalsIgnoreCase("getthingSpeakActive")){
-        client.println(String("thingSpeakActive = ") + thingSpeakActive);
+    else if(commandStr.equalsIgnoreCase("getsqlActive")){
+        client.println(String("sqlActive = ") + sqlActive);
     } 
-    else if(commandStr.equalsIgnoreCase("getlastTSconnect")){
-        client.println(String("lastTSconnectSuccessful = ") + lastTSconnectSuccessful); 
+    else if(commandStr.equalsIgnoreCase("getlastsqlConnect")){
+        client.println(String("lastSQLconnectSuccessful = ") + lastSQLconnectSuccessful); 
     } 
     else if(commandStr.equalsIgnoreCase("getfailedConnectionCount")){
         client.println(String("failedConnectionCount = ") + failedConnectionCount); 
     } 
-    else if(commandStr.equalsIgnoreCase("getip")){
+/*    else if(commandStr.equalsIgnoreCase("getip")){
         IPAddress address = Ethernet.localIP();
         String printStr = String(address[0]) + "." + String(address[1]) + "." + String(address[2]) + "." + String(address[3]);
         client.println(String("IP address = ") + printStr); 
-    } 
+    }  */
     else if(commandStr.equalsIgnoreCase("setinterval")){
         unsigned long msecs = inputStr.toInt() * 1000L; // convert seconds to millis
         client.println(String(msecs) + String(" msec"));
@@ -255,7 +283,7 @@ bool parseTelnetCommand()
         //client.println(String("Wrote new interval to EEPROM."));
         client.println(String("new interval = " + String(interval) + String(" msecs")));
     } 
-    else if(commandStr.equalsIgnoreCase("setapiKey")){
+/*    else if(commandStr.equalsIgnoreCase("setapiKey")){
         client.println("received new apiKey: " + inputStr);
         if(inputStr.length()==16){
           write_StringEE(apiKeyAddr+1, inputStr);    
@@ -266,14 +294,14 @@ bool parseTelnetCommand()
         } else {
           client.println("Key must be 16 characters long! Key not set.");
         }
-    } 
-    else if(commandStr.equalsIgnoreCase("setthingSpeakActive")){
+    } */
+    else if(commandStr.equalsIgnoreCase("setsqlActive")){
         bool newVal = inputStr.toInt();
         if(newVal==1 || newVal==0){
-          EEPROM.put(thingSpeakActiveAddr, newVal);
-          thingSpeakActive = EEPROM.read(thingSpeakActiveAddr);
+          EEPROM.put(sqlActiveAddr, newVal);
+          sqlActive = EEPROM.read(sqlActiveAddr);
           //client.println(String("Wrote new ThingSpeakActive state to EEPROM."));
-          client.println("new state: " + String(thingSpeakActive));
+          client.println("new state: " + String(sqlActive));
         }
     } else if (commandStr.equalsIgnoreCase("restartEthernet")) {
         restartEthernet();
@@ -282,46 +310,6 @@ bool parseTelnetCommand()
       client.println("unknown command");
     }  
   }
-}
-
-
-
-
-
-
-void updateThingSpeak(String tsData)
-{
-  ethernetClient.stop(); // free socket
-  if (ethernetClient.connect(thingSpeakAddress, 80))
-  {         
-    ethernetClient.print("POST /update HTTP/1.1\n");
-    ethernetClient.print("Host: api.thingspeak.com\n");
-    ethernetClient.print("Connection: close\n");
-    ethernetClient.print("X-THINGSPEAKAPIKEY: "+writeAPIKey+"\n");
-    ethernetClient.print("Content-Type: application/x-www-form-urlencoded\n");
-    ethernetClient.print("Content-Length: ");
-    ethernetClient.print(tsData.length());
-    ethernetClient.print("\n\n");
-    ethernetClient.print(tsData);
-
-    //Serial.println(tsData);
-    lastTSconnectSuccessful = 1;
-    resetCounter = 0;
-  }
-  else
-  {
-    // connection failed
-    lastTSconnectSuccessful = 0;
-    failedConnectionCount++;
-    resetCounter++;
-    if(resetCounter>=5){
-      restartEthernet();
-      delay(1000);  // wait a moment to have ethernet shield start up
-      resetCounter = 0;
-    }
-  }
-  
-  ethernetClient.stop();
 }
 
 
